@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+data:
+  APP_NAME: callcenter
+  APP_ENV: {{ .Values.env.APP_ENV | default "production" }}
+  DEBUG: {{ .Values.env.DEBUG | default "false" | quote }}
+  API_V1_PREFIX: "/api/v1"
+  DATABASE_ECHO: {{ .Values.env.DATABASE_ECHO | default "false" | quote }}
+  REDIS_URL: "redis://:$(REDIS_PASSWORD)@{{ .Release.Name }}-redis-master:6379/0"
+  CELERY_BROKER_URL: "redis://:$(REDIS_PASSWORD)@{{ .Release.Name }}-redis-master:6379/1"
+  CELERY_RESULT_BACKEND: "redis://:$(REDIS_PASSWORD)@{{ .Release.Name }}-redis-master:6379/2"
+  LIVEKIT_URL: "ws://{{ .Release.Name }}-livekit:7880"
+  MINIO_ENDPOINT: "{{ .Release.Name }}-minio:9000"
+  MINIO_BUCKET_ATTACHMENTS: "attachments"
+  MINIO_BUCKET_RECORDINGS: "recordings"
+  MINIO_USE_SSL: "false"
+  CORS_ORIGINS: '["https://{{ (index .Values.ingress.hosts 0).host }}"]'

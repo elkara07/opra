@@ -1,0 +1,92 @@
+replicaCount: 2
+
+image:
+  repository: callcenter/api
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+api:
+  port: 8000
+  workers: 4
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+celeryWorker:
+  replicas: 2
+  concurrency: 4
+  queues: "critical,high,default,low"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+celeryBeat:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+postgresql:
+  enabled: true
+  auth:
+    database: callcenter
+    username: callcenter
+    password: ""  # Set via secret
+  primary:
+    persistence:
+      size: 20Gi
+
+redis:
+  enabled: true
+  auth:
+    password: ""  # Set via secret
+  master:
+    persistence:
+      size: 5Gi
+
+minio:
+  enabled: true
+  rootUser: minioadmin
+  rootPassword: ""  # Set via secret
+  persistence:
+    size: 50Gi
+
+livekit:
+  enabled: true
+  apiKey: ""
+  apiSecret: ""
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+  hosts:
+    - host: callcenter.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: callcenter-tls
+      hosts:
+        - callcenter.example.com
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+env:
+  APP_ENV: production
+  DEBUG: "false"
+  DATABASE_ECHO: "false"

@@ -1,0 +1,13 @@
+apiVersion: v2
+name: callcenter
+description: 24/7 Operations Call Center Ticket Management System
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - callcenter
+  - ticketing
+  - sla
+  - voice
+maintainers:
+  - name: ops-team

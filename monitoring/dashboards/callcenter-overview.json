@@ -1,0 +1,80 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Active Tickets by Priority",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "sum(active_tickets) by (priority)", "legendFormat": "{{priority}}" }
+      ]
+    },
+    {
+      "title": "Tickets Created (Rate)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        { "expr": "sum(rate(tickets_created_total[5m])) by (source)", "legendFormat": "{{source}}" }
+      ]
+    },
+    {
+      "title": "SLA Breaches (Rate)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        { "expr": "sum(rate(sla_breach_total[5m])) by (priority)", "legendFormat": "{{priority}}" }
+      ]
+    },
+    {
+      "title": "Escalations (Rate)",
+      "type": "bargauge",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        { "expr": "sum(rate(escalation_total[1h])) by (level)", "legendFormat": "L{{level}}" }
+      ]
+    },
+    {
+      "title": "Voice Call Duration",
+      "type": "histogram",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        { "expr": "voice_call_duration_seconds_bucket", "legendFormat": "{{le}}" }
+      ]
+    },
+    {
+      "title": "Voice Call Cost",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "sum(voice_call_cost_total) by (provider_type)", "legendFormat": "{{provider_type}}" }
+      ]
+    },
+    {
+      "title": "Email Processed",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        { "expr": "sum(rate(email_processed_total[5m])) by (action)", "legendFormat": "{{action}}" }
+      ]
+    },
+    {
+      "title": "Jira Sync Status",
+      "type": "piechart",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [
+        { "expr": "sum(jira_sync_total) by (status)", "legendFormat": "{{status}}" }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["callcenter"],
+  "templating": { "list": [] },
+  "time": { "from": "now-24h", "to": "now" },
+  "title": "CallCenter Overview",
+  "uid": "callcenter-overview"
+}

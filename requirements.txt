@@ -1,0 +1,64 @@
+# FastAPI + ASGI
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+python-multipart==0.0.20
+
+# Database
+sqlalchemy[asyncio]==2.0.40
+asyncpg==0.30.0
+alembic==1.15.2
+greenlet==3.2.1
+
+# Auth & Security
+python-jose[cryptography]==3.4.0
+passlib[bcrypt]==1.7.4
+pyotp==2.9.0
+python-ldap==3.4.4
+cryptography==44.0.3
+
+# Celery
+celery[redis]==5.5.1
+redis==5.3.0
+
+# HTTP Client
+httpx==0.28.1
+
+# Microsoft Graph
+msal==1.32.0
+msgraph-sdk==1.16.0
+
+# Voice Pipeline
+pipecat-ai[daily,openai,anthropic,deepgram,elevenlabs]==0.0.69
+livekit==1.0.5
+livekit-api==1.0.5
+
+# Validation & Serialization
+pydantic==2.11.3
+pydantic-settings==2.9.1
+email-validator==2.2.0
+
+# Date/Time
+pendulum==3.0.0
+
+# Observability
+opentelemetry-api==1.33.1
+opentelemetry-sdk==1.33.1
+opentelemetry-instrumentation-fastapi==0.54b1
+opentelemetry-instrumentation-sqlalchemy==0.54b1
+opentelemetry-instrumentation-celery==0.54b1
+opentelemetry-instrumentation-httpx==0.54b1
+opentelemetry-exporter-otlp==1.33.1
+prometheus-fastapi-instrumentator==7.0.2
+
+# Storage
+boto3==1.38.10
+
+# Utilities
+beautifulsoup4==4.13.4
+structlog==25.1.0
+
+# Testing
+pytest==8.3.5
+pytest-asyncio==0.26.0
+httpx==0.28.1
+factory-boy==3.3.3

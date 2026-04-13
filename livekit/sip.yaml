@@ -1,0 +1,6 @@
+log_level: info
+sip_port: 5060
+sip_port_tls: 5061
+redis:
+  address: redis:6379
+  password: "${REDIS_PASSWORD:-restoran_pass}"
