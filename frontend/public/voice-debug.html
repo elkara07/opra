@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Opra Voice Debug</title>
+<style>
+body { font-family: monospace; max-width: 800px; margin: 40px auto; background: #1e1e1e; color: #d4d4d4; padding: 20px; }
+button { padding: 10px 20px; margin: 5px; font-size: 14px; cursor: pointer; border: none; border-radius: 6px; }
+.rec { background: #dc3545; color: white; }
+.rec:disabled { background: #666; }
+.stop { background: #333; color: white; }
+.send { background: #0d6efd; color: white; }
+.send:disabled { background: #666; }
+.play { background: #198754; color: white; }
+pre { background: #2d2d2d; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 12px; max-height: 300px; overflow-y: auto; }
+.ok { color: #4ec9b0; }
+.err { color: #f14c4c; }
+.warn { color: #dcdcaa; }
+h3 { color: #569cd6; border-bottom: 1px solid #333; padding-bottom: 5px; }
+#log { white-space: pre-wrap; }
+audio { margin: 10px 0; display: block; }
+</style>
+</head>
+<body>
+<h2>Opra Voice Pipeline Debug Console</h2>
+<p>Bu sayfa mikrofon + pipeline'i adim adim test eder.</p>
+
+<h3>Step 1: Login</h3>
+<div>
+  <input id="email" value="admin@acme.com" style="padding:8px;width:200px;background:#2d2d2d;color:#d4d4d4;border:1px solid #555;border-radius:4px">
+  <input id="pass" type="password" value="admin123" style="padding:8px;width:150px;background:#2d2d2d;color:#d4d4d4;border:1px solid #555;border-radius:4px">
+  <button class="send" onclick="doLogin()">Login</button>
+  <span id="loginStatus"></span>
+</div>
+
+<h3>Step 2: Microphone</h3>
+<div>
+  <button class="rec" id="recBtn" onclick="startRec()" disabled>Record (3 saniye konusun)</button>
+  <button class="stop" id="stopBtn" onclick="stopRec()" disabled>Stop</button>
+  <span id="recStatus"></span>
+</div>
+<audio id="playback" controls style="display:none"></audio>
+
+<h3>Step 3: Send to Pipeline</h3>
+<div>
+  <button class="send" id="sendBtn" onclick="sendToPipeline()" disabled>Send to STT → LLM → TTS</button>
+  <button class="play" id="playResBtn" onclick="playResponse()" disabled>Play Response</button>
+</div>
+
+<h3>Step 4: Text Test (bypass mic)</h3>
+<div>
+  <input id="textInput" value="Sunucumuz coktu, acil yardim lazim" style="padding:8px;width:400px;background:#2d2d2d;color:#d4d4d4;border:1px solid #555;border-radius:4px">
+  <button class="send" id="textBtn" onclick="sendText()" disabled>Send Text → LLM → TTS</button>
+</div>
+
+<h3>Log</h3>
+<pre id="log"></pre>
+
+<script>
+let token = '';
+let mediaRecorder = null;
+let chunks = [];
+let audioBlob = null;
+let responseAudio = null;
+
+function log(msg, cls = '') {
+  const el = document.getElementById('log');
+  const time = new Date().toLocaleTimeString();
+  el.innerHTML += `<span class="${cls}">[${time}] ${msg}</span>\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+// --- Step 1: Login ---
+async function doLogin() {
+  const email = document.getElementById('email').value;
+  const pass = document.getElementById('pass').value;
+  log('Logging in as ' + email + '...');
+  try {
+    const res = await fetch('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: pass })
+    });
+    if (!res.ok) { log('Login failed: HTTP ' + res.status, 'err'); return; }
+    const data = await res.json();
+    token = data.access_token;
+    log('Login OK — token: ' + token.substring(0, 30) + '...', 'ok');
+    document.getElementById('loginStatus').textContent = ' ✓ OK';
+    document.getElementById('recBtn').disabled = false;
+    document.getElementById('textBtn').disabled = false;
+
+    // Check voice config
+    const cfgRes = await fetch('/api/v1/voice/config', { headers: { Authorization: 'Bearer ' + token } });
+    const cfg = await cfgRes.json();
+    log('Voice config: STT=' + cfg.stt_provider + ' LLM=' + cfg.llm_provider + ' TTS=' + cfg.tts_provider, 'warn');
+
+    const keysRes = await fetch('/api/v1/voice/api-keys', { headers: { Authorization: 'Bearer ' + token } });
+    const keys = await keysRes.json();
+    log('API keys configured: ' + Object.keys(keys).join(', ') || 'NONE', Object.keys(keys).length ? 'ok' : 'err');
+  } catch (e) { log('Login error: ' + e.message, 'err'); }
+}
+
+// --- Step 2: Record ---
+async function startRec() {
+  log('Requesting microphone access...');
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    log('Microphone access GRANTED', 'ok');
+    log('Audio tracks: ' + stream.getAudioTracks().map(t => t.label + ' (' + t.readyState + ')').join(', '));
+
+    // Check supported MIME types
+    const mimes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+    let selectedMime = '';
+    for (const m of mimes) {
+      if (MediaRecorder.isTypeSupported(m)) { selectedMime = m; break; }
+    }
+    log('Selected MIME type: ' + (selectedMime || 'DEFAULT (browser chooses)'), selectedMime ? 'ok' : 'warn');
+
+    const options = selectedMime ? { mimeType: selectedMime } : {};
+    mediaRecorder = new MediaRecorder(stream, options);
+    log('MediaRecorder created — state: ' + mediaRecorder.state + ', mimeType: ' + mediaRecorder.mimeType);
+    chunks = [];
+
+    mediaRecorder.ondataavailable = (e) => {
+      log('Data chunk received: ' + e.data.size + ' bytes');
+      if (e.data.size > 0) chunks.push(e.data);
+    };
+
+    mediaRecorder.onstop = () => {
+      audioBlob = new Blob(chunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+      log('Recording stopped — total blob size: ' + audioBlob.size + ' bytes (' + (audioBlob.size / 1024).toFixed(1) + ' KB)', audioBlob.size > 1000 ? 'ok' : 'err');
+
+      if (audioBlob.size < 1000) {
+        log('WARNING: Audio blob too small — microphone may not be working!', 'err');
+      }
+
+      const url = URL.createObjectURL(audioBlob);
+      const player = document.getElementById('playback');
+      player.src = url;
+      player.style.display = 'block';
+      log('Audio player ready — press play to listen to your recording');
+
+      stream.getTracks().forEach(t => t.stop());
+      document.getElementById('sendBtn').disabled = false;
+      document.getElementById('recBtn').disabled = false;
+      document.getElementById('stopBtn').disabled = true;
+    };
+
+    mediaRecorder.onerror = (e) => {
+      log('MediaRecorder ERROR: ' + e.error?.message || e, 'err');
+    };
+
+    mediaRecorder.start(500); // Data event every 500ms
+    log('Recording started (speak now for 3+ seconds)...', 'warn');
+    document.getElementById('recBtn').disabled = true;
+    document.getElementById('stopBtn').disabled = false;
+    document.getElementById('recStatus').textContent = ' 🔴 Recording...';
+  } catch (e) {
+    log('Microphone ERROR: ' + e.name + ': ' + e.message, 'err');
+    if (e.name === 'NotAllowedError') log('  → User denied microphone permission. Click the lock icon in address bar to allow.', 'err');
+    if (e.name === 'NotFoundError') log('  → No microphone found. Connect a microphone and try again.', 'err');
+  }
+}
+
+function stopRec() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    log('Stopping recording...');
+    mediaRecorder.stop();
+    document.getElementById('recStatus').textContent = '';
+    document.getElementById('stopBtn').disabled = true;
+  }
+}
+
+// --- Step 3: Send to Pipeline ---
+async function sendToPipeline() {
+  if (!audioBlob) { log('No audio recorded!', 'err'); return; }
+  log('Converting audio to base64...', 'warn');
+
+  const buffer = await audioBlob.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  log('Audio buffer: ' + bytes.length + ' bytes');
+
+  // Chunk-safe base64 encoding
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 8192) {
+    binary += String.fromCharCode.apply(null, bytes.slice(i, i + 8192));
+  }
+  const base64 = btoa(binary);
+  log('Base64 encoded: ' + base64.length + ' chars (first 50: ' + base64.substring(0, 50) + '...)', 'ok');
+
+  log('Sending to /voice/livekit/process ...', 'warn');
+  document.getElementById('sendBtn').disabled = true;
+
+  try {
+    const res = await fetch('/api/v1/voice/livekit/process', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify({ audio_base64: base64, language: 'tr' })
+    });
+
+    log('HTTP response: ' + res.status);
+    const data = await res.json();
+
+    if (data.error) {
+      log('Pipeline ERROR at step "' + data.step + '": ' + data.error, 'err');
+    } else if (data.success) {
+      log('PIPELINE SUCCESS!', 'ok');
+      log('  Transcript: "' + data.transcript + '"', 'ok');
+      log('  Agent says: "' + data.agent_text + '"', 'ok');
+      log('  STT: ' + data.stt?.provider + ' (' + data.stt?.latency_ms + 'ms)');
+      log('  LLM: ' + data.llm?.provider + ' (' + data.llm?.latency_ms + 'ms)');
+      log('  TTS: ' + data.tts?.provider + ' (' + data.tts?.latency_ms + 'ms)');
+      log('  Total: ' + data.timings?.total_ms + 'ms');
+      if (data.tts?.audio_base64) {
+        responseAudio = 'data:' + data.tts.content_type + ';base64,' + data.tts.audio_base64;
+        document.getElementById('playResBtn').disabled = false;
+        log('  Audio response ready — click "Play Response"', 'ok');
+        // Auto-play
+        new Audio(responseAudio).play();
+      }
+    } else {
+      log('Unexpected response: ' + JSON.stringify(data).substring(0, 200), 'warn');
+    }
+  } catch (e) {
+    log('Network error: ' + e.message, 'err');
+  } finally {
+    document.getElementById('sendBtn').disabled = false;
+  }
+}
+
+// --- Step 4: Text test ---
+async function sendText() {
+  const text = document.getElementById('textInput').value;
+  if (!text.trim()) return;
+
+  log('Sending text to LLM: "' + text + '"', 'warn');
+
+  try {
+    // LLM
+    const llmRes = await fetch('/api/v1/voice/test-llm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify({ text })
+    });
+    const llm = await llmRes.json();
+    if (llm.error) { log('LLM ERROR: ' + llm.error, 'err'); return; }
+    log('LLM response: "' + llm.response + '"', 'ok');
+    log('  Provider: ' + llm.provider + ', Latency: ' + llm.latency_ms + 'ms');
+
+    // TTS
+    log('Sending to TTS...', 'warn');
+    const ttsRes = await fetch('/api/v1/voice/test-tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify({ text: llm.response, language: 'tr' })
+    });
+    const tts = await ttsRes.json();
+    if (tts.error) { log('TTS ERROR: ' + tts.error, 'err'); return; }
+    log('TTS OK: ' + tts.provider + ', ' + tts.latency_ms + 'ms', 'ok');
+
+    if (tts.audio_base64) {
+      responseAudio = 'data:' + tts.content_type + ';base64,' + tts.audio_base64;
+      new Audio(responseAudio).play();
+      log('Playing TTS audio...', 'ok');
+    }
+  } catch (e) { log('Error: ' + e.message, 'err'); }
+}
+
+function playResponse() { if (responseAudio) new Audio(responseAudio).play(); }
+</script>
+</body>
+</html>

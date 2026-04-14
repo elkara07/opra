@@ -100,24 +100,72 @@ def _check_audio_energy(audio_bytes: bytes) -> bool:
         return True
 
 
+def _convert_to_wav(audio_bytes: bytes) -> bytes:
+    """Convert any audio format to 16kHz mono PCM WAV using ffmpeg.
+
+    This ensures STT providers get a clean, standard format regardless
+    of what the browser records (webm/opus, ogg, mp4, etc).
+    """
+    import subprocess
+    import tempfile
+    import os
+
+    # Detect if already WAV
+    if audio_bytes[:4] == b'RIFF':
+        return audio_bytes
+
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as inp:
+            inp.write(audio_bytes)
+            inp_path = inp.name
+
+        out_path = inp_path.replace('.webm', '.wav')
+
+        result = subprocess.run([
+            'ffmpeg', '-y', '-i', inp_path,
+            '-ar', '16000',      # 16kHz sample rate
+            '-ac', '1',          # mono
+            '-sample_fmt', 's16', # 16-bit PCM
+            '-f', 'wav',
+            out_path,
+        ], capture_output=True, timeout=10)
+
+        if result.returncode != 0:
+            # ffmpeg failed — return original
+            return audio_bytes
+
+        with open(out_path, 'rb') as f:
+            wav_bytes = f.read()
+
+        os.unlink(inp_path)
+        os.unlink(out_path)
+        return wav_bytes
+
+    except Exception:
+        return audio_bytes
+
+
 async def test_stt(audio_bytes: bytes, tenant: Tenant, language: str = "tr") -> dict:
     """Transcribe audio using configured STT provider."""
     voice_cfg = (tenant.settings or {}).get("voice", {})
     provider = voice_cfg.get("stt_provider", "groq")
 
-    # Energy check for WAV files
-    if audio_bytes[:4] == b'RIFF' and not _check_audio_energy(audio_bytes):
+    # Convert browser audio (webm/opus) to WAV for reliable STT
+    wav_bytes = _convert_to_wav(audio_bytes)
+
+    # Energy check
+    if wav_bytes[:4] == b'RIFF' and not _check_audio_energy(wav_bytes):
         return {"transcript": "", "provider": provider, "latency_ms": 0,
                 "note": "Audio too quiet — no speech detected"}
 
     t0 = time.monotonic()
 
     if provider == "groq":
-        result = await _stt_groq(audio_bytes, tenant, language, t0)
+        result = await _stt_groq(wav_bytes, tenant, language, t0)
     elif provider == "deepgram":
-        result = await _stt_deepgram(audio_bytes, tenant, language, t0)
+        result = await _stt_deepgram(wav_bytes, tenant, language, t0)
     elif provider == "openai" or provider == "voxtral":
-        result = await _stt_openai_compat(audio_bytes, tenant, language, t0, provider)
+        result = await _stt_openai_compat(wav_bytes, tenant, language, t0, provider)
     else:
         return {"error": f"Unknown STT provider: {provider}", "provider": provider}
 
@@ -134,9 +182,36 @@ async def _stt_groq(audio_bytes: bytes, tenant: Tenant, language: str, t0: float
     if not key:
         return {"error": "GROQ_API_KEY not configured", "provider": "groq"}
 
+    # Detect format from header
+    is_wav = audio_bytes[:4] == b'RIFF'
+    filename = "audio.wav" if is_wav else "audio.webm"
+    mime = "audio/wav" if is_wav else "audio/webm"
+
     async with httpx.AsyncClient(timeout=30.0) as client:
-        files = {"file": ("audio.webm", io.BytesIO(audio_bytes), "audio/webm")}
-        data = {"model": "whisper-large-v3-turbo", "language": language}
+        files = {"file": (filename, io.BytesIO(audio_bytes), mime)}
+        # Technical vocabulary prompt — forces Whisper to prefer these terms
+        tech_prompt = (
+            "Teknik destek çağrısı. Terimler: sunucu, server, veritabanı, database, "
+            "ağ, network, firewall, DNS, CPU, RAM, disk, cluster, container, "
+            "deployment, API, endpoint, latency, timeout, SSL, VPN, "
+            "load balancer, kubernetes, docker, redis, postgres, nginx, "
+            "monitoring, alert, incident, SLA, eskalasyon, ticket, "
+            "konfigürasyon, production, staging, rollback, migration, backup, "
+            "servis, uygulama, application, bağlantı, connection, hata, error, "
+            "çöktü, down, erişilemiyor, unreachable, yavaş, slow, "
+            "restart, reboot, log, trace, debug."
+        ) if language == "tr" else (
+            "Technical support call. Terms: server, database, network, firewall, "
+            "DNS, CPU, RAM, disk, cluster, container, deployment, API, endpoint, "
+            "latency, timeout, SSL, VPN, load balancer, kubernetes, docker, "
+            "monitoring, alert, incident, SLA, escalation, ticket, "
+            "configuration, production, staging, rollback, migration, backup."
+        )
+        data = {
+            "model": "whisper-large-v3-turbo",
+            "language": language,
+            "prompt": tech_prompt,
+        }
         resp = await client.post(
             "https://api.groq.com/openai/v1/audio/transcriptions",
             headers={"Authorization": f"Bearer {key}"},
@@ -161,10 +236,13 @@ async def _stt_deepgram(audio_bytes: bytes, tenant: Tenant, language: str, t0: f
     if not key:
         return {"error": "DEEPGRAM_API_KEY not configured", "provider": "deepgram"}
 
+    is_wav = audio_bytes[:4] == b'RIFF'
+    content_type = "audio/wav" if is_wav else "audio/webm"
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             f"https://api.deepgram.com/v1/listen?model=nova-3&language={language}&smart_format=true",
-            headers={"Authorization": f"Token {key}", "Content-Type": "audio/webm"},
+            headers={"Authorization": f"Token {key}", "Content-Type": content_type},
             content=audio_bytes,
         )
     latency = round((time.monotonic() - t0) * 1000)
@@ -194,8 +272,12 @@ async def _stt_openai_compat(audio_bytes: bytes, tenant: Tenant, language: str, 
     if not key:
         return {"error": f"{provider} API key not configured", "provider": provider}
 
+    is_wav = audio_bytes[:4] == b'RIFF'
+    filename = "audio.wav" if is_wav else "audio.webm"
+    mime = "audio/wav" if is_wav else "audio/webm"
+
     async with httpx.AsyncClient(timeout=30.0) as client:
-        files = {"file": ("audio.webm", io.BytesIO(audio_bytes), "audio/webm")}
+        files = {"file": (filename, io.BytesIO(audio_bytes), mime)}
         data = {"model": model, "language": language}
         resp = await client.post(url, headers={"Authorization": f"Bearer {key}"}, files=files, data=data)
     latency = round((time.monotonic() - t0) * 1000)

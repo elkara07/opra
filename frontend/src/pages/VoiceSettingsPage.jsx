@@ -140,6 +140,34 @@ export default function VoiceSettingsPage() {
               </ul>
             </div>
           </div>
+
+          {/* Transfer & On-Call Settings */}
+          <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
+            <h2 className="font-semibold text-slate-800">Transfer & Nobetci Bildirim</h2>
+            <p className="text-xs text-slate-500">Ticket olusturulduktan sonra musteri temsilciye aktarilir. Ulasilamazsa nobetci ekibe mail gider.</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Transfer Telefon / Dahili</label>
+                <input value={config.transfer_phone || ''} onChange={e => saveConfig({ transfer_phone: e.target.value })}
+                  placeholder="orn: +902121234567 veya 100 (PBX dahili)"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Zil Suresi (sn)</label>
+                <input type="number" value={config.transfer_ring_timeout || 30}
+                  onChange={e => saveConfig({ transfer_ring_timeout: parseInt(e.target.value) })}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" />
+                <p className="text-xs text-slate-400 mt-1">Bu sure icinde acilamazsa nobetciye mail gider.</p>
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-xs font-medium text-slate-600 mb-1">Nobetci Email</label>
+                <input value={config.oncall_email || ''} onChange={e => saveConfig({ oncall_email: e.target.value })}
+                  placeholder="oncall@company.com"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" />
+                <p className="text-xs text-slate-400 mt-1">Temsilciye ulasilamadiginda bu adrese arayan bilgileri + ticket detayi gonderilir.</p>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

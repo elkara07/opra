@@ -215,6 +215,10 @@ class VoiceConfigUpdate(BaseModel):
     max_endpointing_delay: int | None = None  # ms
     interruption_mode: str | None = None  # eager, adaptive, conservative
     backchannel_threshold: int | None = None  # ms
+    # Transfer & on-call
+    transfer_phone: str | None = None  # PBX extension or phone to transfer calls
+    transfer_ring_timeout: int | None = None  # seconds to wait before giving up
+    oncall_email: str | None = None  # email to notify when transfer fails
 
 
 class ApiKeyUpdate(BaseModel):
@@ -241,6 +245,9 @@ async def get_voice_config(
         "max_endpointing_delay": voice_cfg.get("max_endpointing_delay", 3000),
         "interruption_mode": voice_cfg.get("interruption_mode", "adaptive"),
         "backchannel_threshold": voice_cfg.get("backchannel_threshold", 300),
+        "transfer_phone": voice_cfg.get("transfer", {}).get("phone", ""),
+        "transfer_ring_timeout": voice_cfg.get("transfer", {}).get("ring_timeout", 30),
+        "oncall_email": voice_cfg.get("oncall_email", ""),
     }
 
 
@@ -255,7 +262,17 @@ async def update_voice_config(
     current_settings = tenant.settings or {}
     voice_cfg = current_settings.get("voice", {})
     for field, value in body.model_dump(exclude_unset=True).items():
-        voice_cfg[field] = value
+        # Nested transfer config
+        if field == "transfer_phone":
+            transfer = voice_cfg.get("transfer", {})
+            transfer["phone"] = value
+            voice_cfg["transfer"] = transfer
+        elif field == "transfer_ring_timeout":
+            transfer = voice_cfg.get("transfer", {})
+            transfer["ring_timeout"] = value
+            voice_cfg["transfer"] = transfer
+        else:
+            voice_cfg[field] = value
     current_settings["voice"] = voice_cfg
     tenant.settings = current_settings
     # Force SQLAlchemy to detect JSONB mutation
@@ -578,17 +595,42 @@ async def test_conversation_turn(
     # Process response: extract fields, detect confirmation
     processed = process_llm_response(llm_result["response"], ctx)
 
-    ctx.add_turn("assistant", processed["text"])
+    agent_text = processed["text"]
+    transfer_info = None
+
+    # --- Post-confirmation flow: CREATE → TRANSFER → (fail) → NOTIFY ---
+    if ctx.state == ConvState.TRANSFER:
+        # Ticket created, now attempt transfer to live agent
+        transfer_result = await _attempt_transfer(tenant, ctx)
+        transfer_info = transfer_result
+
+        if transfer_result["reached"]:
+            agent_text = (agent_text + " " if agent_text else "") + \
+                ("Sizi şimdi temsilciye aktarıyorum." if ctx.language == "tr" else "Transferring you to an agent now.")
+        else:
+            # Transfer failed → notify on-call team
+            ctx.state = ConvState.TRANSFER_FAILED
+            await _notify_oncall(tenant, ctx, db)
+            agent_text = (
+                "Şu anda temsilciye ulaşamadık. Nöbetçi ekibe bildirim gönderildi, "
+                "en kısa sürede sizi arayacaklar. Ticket numaranız kayıtlıdır."
+            ) if ctx.language == "tr" else (
+                "We couldn't reach an agent right now. The on-call team has been notified "
+                "and will call you back shortly. Your ticket number is on file."
+            )
+
+    ctx.add_turn("assistant", agent_text)
 
     # Generate TTS
-    tts_result = await test_tts(processed["text"], tenant, ctx.language)
+    tts_result = await test_tts(agent_text, tenant, ctx.language)
 
     return {
-        "agent_text": processed["text"],
+        "agent_text": agent_text,
         "context": ctx.to_dict(),
         "guardrail": guardrail,
         "extracted_fields": processed["extracted_fields"],
         "confirmed": processed["confirmed"],
+        "transfer": transfer_info,
         "llm": {
             "provider": llm_result.get("provider"),
             "latency_ms": llm_result.get("latency_ms"),
@@ -601,6 +643,65 @@ async def test_conversation_turn(
             "latency_ms": tts_result.get("latency_ms"),
         } if not tts_result.get("error") else None,
     }
+
+
+async def _attempt_transfer(tenant, ctx) -> dict:
+    """Attempt to transfer call to a live agent.
+
+    In production: SIP REFER to PBX queue, or LiveKit room invite.
+    For now: check if any on-call agent is configured and simulate.
+    """
+    voice_cfg = (tenant.settings or {}).get("voice", {})
+    transfer_cfg = voice_cfg.get("transfer", {})
+    transfer_phone = transfer_cfg.get("phone")  # e.g. PBX extension or phone number
+    ring_timeout = transfer_cfg.get("ring_timeout", 30)
+
+    if not transfer_phone:
+        # No transfer target configured
+        return {"reached": False, "reason": "no_transfer_target_configured"}
+
+    # In production: initiate SIP transfer via LiveKit or Twilio
+    # For test: simulate — always fail (so we can test the fallback)
+    # TODO: Replace with actual SIP REFER / LiveKit room transfer
+    return {"reached": False, "reason": "agent_unavailable", "phone": transfer_phone, "timeout": ring_timeout}
+
+
+async def _notify_oncall(tenant, ctx, db):
+    """Send notification to on-call team when transfer fails.
+
+    Sends email with caller info + ticket details to configured on-call address.
+    """
+    voice_cfg = (tenant.settings or {}).get("voice", {})
+    oncall_email = voice_cfg.get("oncall_email")  # e.g. oncall@company.com
+    caller_phone = ctx.fields.get("contact_phone", "unknown")
+    caller_name = ctx.fields.get("caller_name", "unknown")
+    company = ctx.fields.get("company_or_project", "unknown")
+    issue = ctx.fields.get("issue_summary", "unknown")
+    urgency = ctx.fields.get("urgency", "unknown")
+
+    if not oncall_email:
+        # Log but continue — notification is best-effort
+        return
+
+    # Queue email notification via Celery
+    try:
+        from workers.tasks.notification_tasks import send_notification
+        subject = f"[OPRA] Transfer Failed — {urgency.upper()} — {caller_name} / {company}"
+        body = (
+            f"Temsilciye aktarma başarısız oldu.\n\n"
+            f"Arayan: {caller_name}\n"
+            f"Firma/Proje: {company}\n"
+            f"Telefon: {caller_phone}\n"
+            f"Sorun: {issue}\n"
+            f"Aciliyet: {urgency}\n"
+            f"Etkilenen Sistem: {ctx.fields.get('affected_system', 'unknown')}\n\n"
+            f"Lütfen en kısa sürede geri arayın."
+        )
+        send_notification.delay(
+            str(tenant.id), "email", oncall_email, subject, body,
+        )
+    except Exception:
+        pass  # Best effort — don't break the call flow
 
 
 class TTSTestRequest(BaseModel):

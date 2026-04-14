@@ -9,6 +9,7 @@ import {
 
 const REQUIRED_FIELDS = {
   caller_name: { label: 'Arayan Adi', icon: '👤' },
+  company_or_project: { label: 'Firma/Proje', icon: '🏢' },
   issue_summary: { label: 'Sorun Ozeti', icon: '📝' },
   affected_system: { label: 'Etkilenen Sistem', icon: '🖥' },
   urgency: { label: 'Aciliyet', icon: '⚡' },
